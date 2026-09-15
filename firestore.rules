@@ -1,0 +1,56 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null && request.auth.token.get('admin', false) == true;
+    }
+
+    match /formSubmissions/{submissionId} {
+      allow create: if request.auth != null
+        && submissionId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'submitted'
+        && request.resource.data.cvStored == false
+        && request.resource.data.cvPath == null
+        && request.resource.data.cvUrl == null
+        && request.resource.data.submittedAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow read: if request.auth != null
+        && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow update: if request.auth != null
+        && request.resource.data.userId == resource.data.userId
+        && (isAdmin() || (resource.data.userId == request.auth.uid
+          && request.resource.data.status == 'submitted'
+          && request.resource.data.cvStored == false
+          && request.resource.data.cvPath == null
+          && request.resource.data.cvUrl == null
+          && request.resource.data.submittedAt == resource.data.submittedAt
+          && request.resource.data.updatedAt == request.time));
+
+      allow delete: if request.auth != null
+        && (resource.data.userId == request.auth.uid || isAdmin());
+
+      match /statusHistory/{historyId} {
+        allow read: if request.auth != null
+          && (get(/databases/$(database)/documents/formSubmissions/$(submissionId)).data.userId == request.auth.uid || isAdmin());
+
+        // Owners add a history entry alongside a saved submission.
+        allow create: if isAdmin() || (
+          request.auth != null
+          && getAfter(/databases/$(database)/documents/formSubmissions/$(submissionId)).data.updatedAt == request.time
+          && getAfter(/databases/$(database)/documents/formSubmissions/$(submissionId)).data.userId == request.auth.uid
+          && getAfter(/databases/$(database)/documents/formSubmissions/$(submissionId)).data.status == 'submitted'
+          && request.resource.data.status == 'submitted'
+          && request.resource.data.changedBy == request.auth.uid
+          && request.resource.data.changedAt == request.time
+        );
+        allow update: if isAdmin();
+        allow delete: if request.auth != null
+          && (isAdmin() || get(/databases/$(database)/documents/formSubmissions/$(submissionId)).data.userId == request.auth.uid);
+      }
+    }
+  }
+}

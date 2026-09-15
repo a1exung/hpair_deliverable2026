@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { getFormSubmissions, getSubmissionCount } from '../services/firebaseService';
+import { getFormSubmissions, getSubmissionCount, updateSubmissionStatus } from '../services/firebaseService';
 import { useAuth } from '../contexts/AuthContext';
 import { signOutUser } from '../services/authService';
 
@@ -9,6 +9,9 @@ const AdminPanel = () => {
   const [submissionCount, setSubmissionCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [statusDrafts, setStatusDrafts] = useState({});
+  const [noteDrafts, setNoteDrafts] = useState({});
+  const [savingId, setSavingId] = useState('');
   const { user, userId: currentUserId } = useAuth();
 
   const handleLogout = async () => {
@@ -50,6 +53,28 @@ const AdminPanel = () => {
     return new Date(timestamp.seconds * 1000).toLocaleString();
   };
 
+  const saveStatus = async submission => {
+    const status = statusDrafts[submission.id] || submission.status || 'submitted';
+    const note = noteDrafts[submission.id] || '';
+    try {
+      setSavingId(submission.id);
+      setError('');
+      const result = await updateSubmissionStatus({
+        submissionId: submission.id,
+        status,
+        note,
+        adminId: currentUserId,
+      });
+      if (!result.success) setError(result.message);
+      else await loadSubmissions();
+    } catch (err) {
+      setError('Failed to update submission status');
+      console.error('Error updating submission status:', err);
+    } finally {
+      setSavingId('');
+    }
+  };
+
   if (loading) {
     return (
       <div className="container">
@@ -63,7 +88,7 @@ const AdminPanel = () => {
   return (
     <div className="container">
       <div className="form-container">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div className="form-heading">
           <h1>Admin Panel - All Submissions</h1>
           <div style={{ display: 'flex', gap: '10px' }}>
             <Link 
@@ -83,7 +108,7 @@ const AdminPanel = () => {
           </div>
         </div>
         
-        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f8f9fa', borderRadius: '8px' }}>
+        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: 'var(--color-surface-muted)', borderRadius: '8px' }}>
           <p><strong>Logged in as:</strong> {user.email}</p>
           <p><strong>Total submissions:</strong> {submissionCount}</p>
           <p><strong>Showing all submissions from all users</strong></p>
@@ -121,6 +146,28 @@ const AdminPanel = () => {
                   <p><strong>Name:</strong> {submission.firstName} {submission.lastName}</p>
                   <p><strong>Date of Birth:</strong> {submission.dateOfBirth}</p>
                   <p><strong>Gender:</strong> {submission.gender}</p>
+                  {submission.cvUrl && <p><a href={submission.cvUrl} target="_blank" rel="noreferrer">Download CV</a></p>}
+                  <div className="submission-status-controls">
+                    <label htmlFor={`status-${submission.id}`}>Status</label>
+                    <select
+                      id={`status-${submission.id}`}
+                      value={statusDrafts[submission.id] || submission.status || 'submitted'}
+                      onChange={event => setStatusDrafts(previous => ({ ...previous, [submission.id]: event.target.value }))}
+                    >
+                      {['submitted', 'under_review', 'accepted', 'rejected', 'waitlisted'].map(status => (
+                        <option key={status} value={status}>{status.replace('_', ' ')}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Optional reviewer note"
+                      value={noteDrafts[submission.id] || ''}
+                      onChange={event => setNoteDrafts(previous => ({ ...previous, [submission.id]: event.target.value }))}
+                    />
+                    <button type="button" className="btn btn-primary" disabled={savingId === submission.id} onClick={() => saveStatus(submission)}>
+                      {savingId === submission.id ? 'Saving...' : 'Save status'}
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}

@@ -1,48 +1,61 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { FiPrinter } from 'react-icons/fi';
+import { useFormDraft } from '../hooks/useFormDraft';
+import { validateProfile } from '../utils/validateProfile';
+import SubmissionSummary from './SubmissionSummary';
 import PersonalInfoStep from './steps/PersonalInfoStep';
-import { submitForm, getFormSubmissions, getSubmissionCount } from '../services/firebaseService';
+import { submitForm, getUserFormSubmissions, clearUserSubmission } from '../services/firebaseService';
 import { useAuth } from '../contexts/AuthContext';
 import { signOutUser } from '../services/authService';
 
+const NO_ERRORS = {};
+
 const MultiStepForm = () => {
-  const [formData, setFormData] = useState({});
+  const { user, userId } = useAuth();
+  const { formData, setFormData, draftStatus, clearDraft } = useFormDraft(userId);
+  // The CV stays in memory; only its filename is persisted with the form answers.
+  const [cvFile, setCVFile] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState('');
-  const [submissions, setSubmissions] = useState([]);
-  const [submissionCount, setSubmissionCount] = useState(0);
+  const [submission, setSubmission] = useState(null);
+  const [view, setView] = useState('form');
+  const [savedCVName, setSavedCVName] = useState('');
+  const [confirmClear, setConfirmClear] = useState(false);
+  const busy = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const { user, userId } = useAuth();
+  const formRef = useRef(null);
+  const [submitAttempts, setSubmitAttempts] = useState(0);
+  // Share one validation result between submission and section completion.
+  const currentErrors = useMemo(
+    () => validateProfile(formData, cvFile, savedCVName),
+    [formData, cvFile, savedCVName]
+  );
+  const validationErrors = submitAttempts ? currentErrors : NO_ERRORS;
+  const errorCount = Object.keys(validationErrors).length;
+
+  useEffect(() => {
+    if (!submitAttempts) return;
+    const firstInvalid = formRef.current?.querySelector('[aria-invalid="true"]:not([disabled]), [data-invalid="true"]');
+    firstInvalid?.focus({ preventScroll: true });
+    firstInvalid?.scrollIntoView?.({ block: 'center' });
+  }, [submitAttempts]);
 
   const handleLogout = async () => {
     await signOutUser();
   };
 
-  // Load user's submissions
-  useEffect(() => {
-    loadSubmissions();
-  }, [userId]);
-
-  const loadSubmissions = async () => {
+  const loadSubmissions = useCallback(async () => {
     try {
       setLoading(true);
-      const [submissionsResult, countResult] = await Promise.all([
-        getFormSubmissions(),
-        getSubmissionCount()
-      ]);
-
+      setError('');
+      const submissionsResult = await getUserFormSubmissions(userId);
       if (submissionsResult.success) {
-        // Show only current user's submissions
-        const userSubmissions = submissionsResult.data.filter(
-          submission => submission.userId === userId
-        );
-        setSubmissions(userSubmissions);
+        const saved = submissionsResult.data.find(item => item.id === userId) || submissionsResult.data[0] || null;
+        setSubmission(saved);
+        setView(saved ? 'saved' : 'form');
       } else {
         setError(submissionsResult.message);
-      }
-
-      if (countResult.success) {
-        setSubmissionCount(countResult.count);
       }
     } catch (err) {
       setError('Failed to load submissions');
@@ -50,31 +63,33 @@ const MultiStepForm = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [userId]);
 
-  // TODO: Implement form validation using Formik and Yup
-  // TODO: Implement form data handling
+  useEffect(() => {
+    loadSubmissions();
+  }, [loadSubmissions]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setIsSubmitting(true);
+    if (busy.current) return;
     setSubmitMessage('');
+    setSubmitAttempts(attempts => attempts + 1);
+    if (Object.keys(currentErrors).length) return;
+    busy.current = true;
+    setIsSubmitting(true);
     
     try {
-      // TODO: Add validation before submitting
-      const submissionData = {
-        ...formData,
-        userId: userId
-      };
-      
-      const result = await submitForm(submissionData);
+      const result = await submitForm(formData, cvFile, userId, savedCVName);
       
       if (result.success) {
-        setSubmitMessage('Form submitted successfully!');
+        setSubmission(result.data || { ...formData, cvName: cvFile?.name || savedCVName });
+        setView('success');
+        setSavedCVName('');
         // Reset form
-        setFormData({});
-        // Reload submissions to show the new one
-        loadSubmissions();
+        clearDraft();
+        setCVFile(null);
+        setSubmitAttempts(0);
+
       } else {
         setSubmitMessage(result.message);
       }
@@ -82,15 +97,60 @@ const MultiStepForm = () => {
       setSubmitMessage('An error occurred. Please try again.');
       console.error('Submit error:', error);
     } finally {
+      busy.current = false;
+      setIsSubmitting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (view !== 'success') return;
+    const timer = setTimeout(() => setView('saved'), 1600);
+    return () => clearTimeout(timer);
+  }, [view]);
+
+  useEffect(() => {
+    document.getElementById('profile-title')?.focus({ preventScroll: true });
+  }, [view]);
+
+  const editSubmission = () => {
+    if (!Object.keys(formData).length) setFormData(submission);
+    setSavedCVName(submission.cvName || '');
+    setSubmitMessage('');
+    setConfirmClear(false);
+    setView('form');
+  };
+
+  const clearSubmission = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setIsSubmitting(true);
+    setSubmitMessage('');
+    try {
+      const result = await clearUserSubmission(userId);
+      if (!result.success) { setSubmitMessage(result.message); return; }
+      clearDraft();
+      setSubmission(null);
+      setCVFile(null);
+      setSavedCVName('');
+      setSubmitAttempts(0);
+      setConfirmClear(false);
+      setView('form');
+    } catch {
+      setSubmitMessage('We couldn’t clear your submission. Please try again.');
+    } finally {
+      busy.current = false;
       setIsSubmitting(false);
     }
   };
 
   return (
     <div className="container">
-      <div className="form-container">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h1>Personal Information Form</h1>
+      <div className={`form-container${view === 'saved' && !loading && !error ? ' printable-response' : ''}`}>
+        <div className="form-heading">
+          <div>
+            <p className="eyebrow" role={view === 'saved' ? 'heading' : undefined} aria-level={view === 'saved' ? 1 : undefined} id={view === 'saved' ? 'profile-title' : undefined} tabIndex={view === 'saved' ? -1 : undefined}>{view === 'saved' ? 'Your HPAIR profile' : 'YOUR HPAIR PROFILE'}</p>
+            {view !== 'saved' && <h1 id="profile-title" tabIndex={-1}>{view === 'success' ? 'Submission successful' : submission ? 'Edit your information.' : 'Let’s get to know you.'}</h1>}
+          </div>
           <button 
             onClick={handleLogout}
             className="btn btn-secondary"
@@ -99,98 +159,71 @@ const MultiStepForm = () => {
             Logout
           </button>
         </div>
-        <p>Please provide your basic personal details.</p>
-        
-        <div style={{ 
-          marginBottom: '20px', 
-          padding: '10px', 
-          backgroundColor: '#e3f2fd', 
-          borderRadius: '4px',
-          fontSize: '14px'
-        }}>
-          <strong>Logged in as:</strong> {user.email}
+        <div className="page-description-row">
+        <p className="page-description">{view === 'saved' ? 'Your information is saved. You can review, edit, or clear it below.' : view === 'success' ? 'Thank you. Your HPAIR profile has been saved.' : 'Tell us about yourself and how to reach you. Fields are required unless marked optional.'}</p>
+        {view === 'saved' && !loading && !error && <button type="button" className="print-icon-button" onClick={() => window.print()} aria-label="Print / Save as PDF" title="Print / Save as PDF"><FiPrinter aria-hidden="true" /></button>}
         </div>
         
-        <form onSubmit={handleSubmit}>
+        <div className="account-strip">
+          <span>Signed in as <strong>{user.email}</strong></span>
+        </div>
+
+        {loading ? <p role="status">Loading your information…</p> : error ? <div role="status"><p>{error}</p><button className="btn btn-secondary" onClick={loadSubmissions}>Try again</button></div> : view === 'success' ? (
+          <div className="submission-success" role="status"><span aria-hidden="true">✓</span><p>Your information is ready to review.</p><button className="btn btn-secondary" onClick={() => setView('saved')}>View submission</button></div>
+        ) : view === 'saved' ? <>
+          <SubmissionSummary submission={submission} />
+          {submitMessage && <p className="validation-summary" role="status">{submitMessage}</p>}
+          {confirmClear ? <div className="validation-summary"><strong>Clear your submission?</strong><p>This removes your saved information and draft. You can fill out a new form afterwards.</p><div className="submission-buttons"><button className="btn btn-primary" disabled={isSubmitting} onClick={clearSubmission}>{isSubmitting ? 'Clearing…' : 'Yes, clear submission'}</button><button className="btn btn-secondary" disabled={isSubmitting} onClick={() => setConfirmClear(false)}>Keep submission</button></div></div> : <div className="submission-buttons"><button className="btn btn-primary" onClick={editSubmission}>Edit submission</button><button className="btn btn-secondary" onClick={() => setConfirmClear(true)}>Clear submission</button></div>}
+        </> : <>
+        <p className="draft-status" role="status" aria-live="polite">
+          {draftStatus === 'restored'
+            ? (savedCVName ? 'Your draft edits are restored.' : 'Your draft is restored. Please select your CV again before submitting.')
+            : draftStatus === 'saved'
+              ? 'Draft saved on this browser.'
+              : draftStatus === 'unavailable'
+                ? 'Draft saving is unavailable in this browser. Keep this page open to retain your answers.'
+                : 'Your answers save automatically on this browser.'}
+        </p>
+
+        <form ref={formRef} noValidate autoComplete="off" onSubmit={handleSubmit} className="profile-form">
           <PersonalInfoStep 
+            errors={validationErrors}
+            completionErrors={currentErrors}
             formData={formData} 
+            cvFile={cvFile}
+            savedCVName={savedCVName}
+            onCVChange={file => { setCVFile(file); setSavedCVName(''); }}
             setFormData={setFormData} 
           />
           
+          {errorCount > 0 && (
+            <div className="validation-summary" role="status" aria-live="polite">
+              <strong>A few details still need your attention.</strong>
+              <p>Please check {errorCount === 1 ? 'the highlighted field' : `the ${errorCount} highlighted fields`} above. Your answers are still here.</p>
+            </div>
+          )}
           {submitMessage && (
-            <div className={`submit-message ${submitMessage.includes('successfully') ? 'success' : 'error'}`}>
+            <div className={`submit-message ${submitMessage.includes('successfully') ? 'success' : 'error'}`} role="status">
               {submitMessage}
             </div>
           )}
           
-          <div className="form-actions">
+          <div className="form-actions profile-actions">
+            {submission && <button type="button" className="btn btn-secondary" disabled={isSubmitting} onClick={() => { setSubmitMessage(''); setSubmitAttempts(0); setView('saved'); }}>Cancel editing</button>}
             <button
               type="submit"
               className="btn btn-primary"
               disabled={isSubmitting}
             >
-              {isSubmitting ? 'Submitting...' : 'Submit'}
+              {isSubmitting ? 'Saving…' : submission ? 'Save changes' : 'Submit information'}
             </button>
           </div>
         </form>
 
-        {/* Admin Panel - User's Submissions */}
-        <div style={{ marginTop: '40px', paddingTop: '40px', borderTop: '2px solid #e0e0e0' }}>
-          <h2>Your Form Submissions</h2>
-          <p>View all your submitted forms below.</p>
-          
-          <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f8f9fa', borderRadius: '8px' }}>
-            <p><strong>Logged in as:</strong> {user.email}</p>
-            <p><strong>Total submissions:</strong> {submissionCount}</p>
-            <p><strong>Your submissions:</strong> {submissions.length}</p>
-          </div>
-
-          {error && (
-            <div className="submit-message error">
-              {error}
-            </div>
-          )}
-
-          <button 
-            onClick={loadSubmissions} 
-            className="btn btn-primary"
-            style={{ marginBottom: '20px' }}
-          >
-            Refresh
-          </button>
-
-          {loading ? (
-            <p>Loading submissions...</p>
-          ) : submissions.length === 0 ? (
-            <p>No submissions yet. Fill out the form above to get started!</p>
-          ) : (
-            <div className="submissions-list">
-              {submissions.map((submission) => (
-                <div key={submission.id} className="submission-item">
-                  <div className="submission-header">
-                    <h3>Submission #{submission.id.slice(-8)}</h3>
-                    <span className="submission-date">
-                      {formatDate(submission.submittedAt)}
-                    </span>
-                  </div>
-              <div className="submission-details">
-                <p><strong>Name:</strong> {submission.firstName} {submission.lastName}</p>
-                <p><strong>Date of Birth:</strong> {submission.dateOfBirth}</p>
-                <p><strong>Gender:</strong> {submission.gender}</p>
-              </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        </>}
       </div>
     </div>
   );
-};
-
-const formatDate = (timestamp) => {
-  if (!timestamp) return 'N/A';
-  return new Date(timestamp.seconds * 1000).toLocaleString();
 };
 
 export default MultiStepForm;

@@ -75,6 +75,10 @@ const getErrorMessage = (errorCode) => {
       return 'Please enter a valid email address.';
     case 'auth/user-not-found':
       return 'No account found with this email. Please register first.';
+    case 'auth/invalid-credential':
+      return 'The email or password is incorrect. Please try again.';
+    case 'auth/network-request-failed':
+      return 'Unable to connect. Check your internet connection and try again.';
     case 'auth/wrong-password':
       return 'Incorrect password. Please try again.';
     case 'auth/too-many-requests':
@@ -84,10 +88,12 @@ const getErrorMessage = (errorCode) => {
   }
 };
 
-export default {
+const authService = {
   registerUser,
   signInUser,
   signOutUser,
   onAuthStateChange,
   getCurrentUser
 };
+
+export default authService;
